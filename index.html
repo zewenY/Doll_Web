@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI 玩偶伴侣</title>
+    <style>
+        /* --- 简单的 CSS 样式，让界面看起来像个 APP --- */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+            color: #333;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 20px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+        }
+
+        h1 { margin-bottom: 10px; font-size: 24px; }
+        p { color: #666; margin-bottom: 30px; }
+
+        /* 状态指示灯 */
+        .status-dot {
+            height: 12px; width: 12px;
+            background-color: #ccc;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+        }
+        .status-text { font-size: 14px; color: #888; margin-bottom: 20px; display: block; }
+
+        /* 按钮通用样式 */
+        .btn {
+            width: 100%;
+            padding: 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.1s, opacity 0.2s;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .btn:active { transform: scale(0.98); }
+
+        /* 连接按钮 */
+        .btn-connect { background-color: #007AFF; color: white; }
+        .btn-connect:hover { background-color: #0062cc; }
+
+        /* 抚摸按钮 */
+        .btn-action { 
+            background-color: #34C759; 
+            color: white; 
+            display: none; /* 默认隐藏，连上才显示 */
+        }
+        .btn-action:disabled { background-color: #ccc; cursor: not-allowed; }
+
+        /* 调试日志 (可选，演示时可以隐藏) */
+        #console {
+            margin-top: 20px;
+            font-size: 12px;
+            color: #999;
+            text-align: left;
+            height: 100px;
+            overflow-y: auto;
+            background: #f9f9f9;
+            padding: 10px;
+            border-radius: 8px;
+            display: none; /* 如果不想看日志，保持 none */
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <div style="font-size: 60px; margin-bottom: 20px;">🧸</div>
+        
+        <h1>我的 AI 玩偶</h1>
+        <p>点击连接，体验拟真触觉互动</p>
+
+        <span class="status-text">
+            <span id="dot" class="status-dot"></span>
+            <span id="statusMsg">未连接设备</span>
+        </span>
+
+        <button id="btnConnect" class="btn btn-connect" onclick="connectToDoll()">
+            📡 搜索并连接
+        </button>
+
+        <button id="btnNod" class="btn btn-action" onclick="sendNod()">
+            👋 抚摸玩偶头部
+        </button>
+
+        <div id="console"></div>
+    </div>
+
+    <script>
+        // === 配置区域：必须与 ESP32 代码一致 ===
+        const SERVICE_UUID = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
+        const CHAR_UUID    = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
+
+        // 全局变量
+        let deviceHandle;
+        let charHandle;
+
+        // 1. 连接设备的核心逻辑
+        async function connectToDoll() {
+            try {
+                updateStatus("正在搜索蓝牙...", "orange");
+                
+                // 浏览器弹窗搜索设备
+                deviceHandle = await navigator.bluetooth.requestDevice({
+                    filters: [{ name: 'ESP32_Doll' }], // 只显示我们的玩偶
+                    optionalServices: [SERVICE_UUID]   // 必须声明服务
+                });
+
+                updateStatus("设备已选中，正在连接...", "blue");
+                
+                // 连接 GATT 服务器
+                const server = await deviceHandle.gatt.connect();
+                
+                // 获取服务
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                
+                // 获取特征值 (读写通道)
+                charHandle = await service.getCharacteristic(CHAR_UUID);
+
+                // 连接成功！
+                onConnected();
+
+                // 监听意外断开
+                deviceHandle.addEventListener('gattserverdisconnected', onDisconnected);
+
+            } catch (error) {
+                console.error(error);
+                // 如果是用户取消，就不报错
+                if (error.name !== 'NotFoundError') {
+                    updateStatus("连接失败: " + error.message, "red");
+                } else {
+                    updateStatus("用户取消连接", "#ccc");
+                }
+            }
+        }
+
+        // 2. 发送指令逻辑
+        async function sendNod() {
+            if (!charHandle) return;
+            
+            try {
+                // 按钮添加点击反馈效果
+                const btn = document.getElementById('btnNod');
+                const originalText = btn.innerHTML;
+                btn.innerHTML = "✨ 发送指令中...";
+                btn.disabled = true;
+
+                // 发送 "nod" 字符串
+                let encoder = new TextEncoder('utf-8');
+                await charHandle.writeValue(encoder.encode("nod"));
+                
+                log("指令 [nod] 已发送");
+
+                // 恢复按钮状态
+                setTimeout(() => {
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                }, 500); // 0.5秒后恢复
+
+            } catch (error) {
+                log("发送失败: " + error);
+                updateStatus("发送失败，请重连", "red");
+            }
+        }
+
+        // --- 辅助函数 ---
+
+        function onConnected() {
+            updateStatus("✅ 已连接到玩偶", "#34C759");
+            document.getElementById('btnConnect').style.display = 'none'; // 隐藏连接按钮
+            document.getElementById('btnNod').style.display = 'flex';     // 显示互动按钮
+        }
+
+        function onDisconnected() {
+            updateStatus("🔴 连接已断开", "red");
+            document.getElementById('btnConnect').style.display = 'flex';
+            document.getElementById('btnNod').style.display = 'none';
+            charHandle = null;
+        }
+
+        function updateStatus(text, color) {
+            document.getElementById('statusMsg').innerText = text;
+            document.getElementById('dot').style.backgroundColor = color;
+            log(text);
+        }
+
+        function log(msg) {
+            const box = document.getElementById('console');
+            box.innerHTML += `<div>${new Date().toLocaleTimeString()} - ${msg}</div>`;
+            // 如果需要查看详细日志，把 CSS 里的 #console display:none 改掉
+        }
+    </script>
+</body>
+</html>
